@@ -1,0 +1,16 @@
+[package]
+name = "za"
+version = "0.1.0"
+edition = "2021"
+description = "Resume AI agent sessions across Zellij restarts"
+license = "MIT"
+
+[dependencies]
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+toml = "0.8"
+
+[profile.release]
+lto = "thin"
+strip = true
