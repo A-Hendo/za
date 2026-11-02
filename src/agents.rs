@@ -5,6 +5,7 @@
 //! start a different session (a prompt, `--continue`, `--worktree`, ...).
 
 use serde_json::Value;
+use std::path::Path;
 
 /// How many arguments a flag consumes after itself.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -21,8 +22,11 @@ use Val::*;
 
 pub struct Agent {
     pub name: &'static str,
+    /// Appended with the session id to resume it (a flag, or a subcommand
+    /// like codex's `resume` that may follow the other flags).
     pub resume_flag: &'static str,
-    pub continue_flag: &'static str,
+    /// Appended to continue the most recent session in this directory.
+    pub continue_args: &'static [&'static str],
     /// Flags removed from the command line when resuming.
     pub drop: &'static [(&'static str, Val)],
     /// Value-taking flags that are kept when resuming.
@@ -39,6 +43,13 @@ pub struct Agent {
     pub subagent_key: Option<&'static str>,
     /// What the hook must print on stdout for the agent to accept it.
     pub hook_stdout: &'static str,
+    /// Flags that set the agent's working directory (dropped on resume, which
+    /// runs in the recorded directory instead).
+    pub cwd_flags: &'static [&'static str],
+    /// An argument on the command line of a shared background server that may
+    /// run this agent's hooks outside its pane, without the pane's environment.
+    /// Hooks fired from there are matched to panes by working directory.
+    pub server_arg: Option<&'static str>,
 }
 
 pub enum Launch<'a> {
@@ -51,7 +62,7 @@ pub static AGENTS: &[Agent] = &[
     Agent {
         name: "claude",
         resume_flag: "--resume",
-        continue_flag: "--continue",
+        continue_args: &["--continue"],
         drop: &[
             ("-r", Opt),
             ("--resume", Opt),
@@ -119,12 +130,14 @@ pub static AGENTS: &[Agent] = &[
         session_keys: &["session_id"],
         subagent_key: Some("agent_id"),
         hook_stdout: "",
+        cwd_flags: &[],
+        server_arg: None,
     },
     Agent {
         // GitHub Copilot CLI. Flags are from its docs, not a local install.
         name: "copilot",
         resume_flag: "--resume",
-        continue_flag: "--continue",
+        continue_args: &["--continue"],
         drop: &[
             ("--resume", Opt),
             ("--continue", No),
@@ -149,11 +162,13 @@ pub static AGENTS: &[Agent] = &[
         session_keys: &["sessionId", "session_id"],
         subagent_key: None,
         hook_stdout: "",
+        cwd_flags: &[],
+        server_arg: None,
     },
     Agent {
         name: "kimi",
         resume_flag: "--session",
-        continue_flag: "--continue",
+        continue_args: &["--continue"],
         drop: &[
             ("-S", Opt),
             ("--session", Opt),
@@ -180,12 +195,14 @@ pub static AGENTS: &[Agent] = &[
         session_keys: &["session_id"],
         subagent_key: None,
         hook_stdout: "",
+        cwd_flags: &[],
+        server_arg: None,
     },
     Agent {
         // Antigravity CLI.
         name: "agy",
         resume_flag: "--conversation",
-        continue_flag: "--continue",
+        continue_args: &["--continue"],
         drop: &[
             ("--conversation", One),
             ("-c", No),
@@ -218,11 +235,13 @@ pub static AGENTS: &[Agent] = &[
         subagent_key: None,
         // Antigravity expects a JSON object back from every hook.
         hook_stdout: "{}\n",
+        cwd_flags: &[],
+        server_arg: None,
     },
     Agent {
         name: "grok",
         resume_flag: "--resume",
-        continue_flag: "--continue",
+        continue_args: &["--continue"],
         drop: &[
             ("-r", Opt),
             ("--resume", Opt),
@@ -270,6 +289,65 @@ pub static AGENTS: &[Agent] = &[
         session_keys: &["session_id", "sessionId"],
         subagent_key: None,
         hook_stdout: "",
+        cwd_flags: &[],
+        server_arg: None,
+    },
+    Agent {
+        // OpenAI Codex CLI. Flags are from its source and `--help` (0.166.0).
+        // Resuming is a subcommand (`codex [flags] resume <id>`),
+        // and root flags still apply to it.
+        name: "codex",
+        resume_flag: "resume",
+        continue_args: &["resume", "--last"],
+        drop: &[
+            ("-i", Many),
+            ("--image", Many),
+            ("--worktree", No),
+            ("-C", One),
+            ("--cd", One),
+            // `codex resume`'s own flags, if the pane was started with it.
+            ("--last", No),
+            ("--all", No),
+            ("--include-non-interactive", No),
+        ],
+        values: &[
+            ("-m", One),
+            ("--model", One),
+            ("--local-provider", One),
+            ("-p", One),
+            ("--profile", One),
+            ("-s", One),
+            ("--sandbox", One),
+            ("-a", One),
+            ("--ask-for-approval", One),
+            ("-c", One),
+            ("--config", One),
+            ("--enable", One),
+            ("--disable", One),
+            ("--remote", One),
+            ("--remote-auth-token-env", One),
+            ("--add-dir", One),
+        ],
+        oneshot: &["-h", "--help", "-V", "--version"],
+        // Not `resume` or `fork`: those are interactive sessions to track.
+        subcommands: &[
+            "agents", "tcp-tunnel", "exec", "e", "review", "login", "logout", "mcp", "plugin",
+            "app-server", "remote-control", "app", "completion", "doctor", "sandbox", "debug",
+            "execpolicy", "apply", "a", "queue", "archive", "delete", "migrate-rollouts",
+            "migrate-nfs-db", "unarchive", "cloud", "cloud-tasks", "responses-api-proxy",
+            "stdio-to-uds", "exec-server", "features", "help", "update",
+        ],
+        // Positionals are the prompt, or `resume`/`fork` and their target.
+        positional_prompt: true,
+        session_env: None,
+        session_keys: &["session_id"],
+        // Subagents fire SubagentStart, never SessionStart.
+        subagent_key: None,
+        hook_stdout: "",
+        cwd_flags: &["-C", "--cd"],
+        // By default codex runs sessions, and their hooks, in a shared
+        // `codex app-server` daemon.
+        server_arg: Some("app-server"),
     },
 ];
 
@@ -357,10 +435,40 @@ impl Agent {
                 out.push(self.resume_flag.to_string());
                 out.push(id.to_string());
             }
-            Launch::Continue => out.push(self.continue_flag.to_string()),
+            Launch::Continue => out.extend(self.continue_args.iter().map(|s| s.to_string())),
             Launch::Fresh => {}
         }
         out
+    }
+
+    /// The directory the agent will work in: `here`, unless a cwd flag
+    /// (`codex -C dir`) points elsewhere.
+    pub fn effective_cwd(&self, args: &[String], here: &str) -> String {
+        let mut dir = None;
+        let mut i = 0;
+        while i < args.len() {
+            let arg = &args[i];
+            if arg == "--" {
+                break;
+            }
+            if arg.starts_with('-') {
+                let n = self.consumed(arg, &args[i + 1..]);
+                if self.cwd_flags.contains(&flag_name(arg)) {
+                    dir = match arg.split_once('=') {
+                        Some((_, v)) if arg.starts_with("--") => Some(v),
+                        _ if n == 1 => Some(args[i + 1].as_str()),
+                        _ => dir,
+                    };
+                }
+                i += 1 + n;
+                continue;
+            }
+            i += 1;
+        }
+        match dir {
+            Some(d) => Path::new(here).join(d).to_string_lossy().into_owned(),
+            None => here.to_string(),
+        }
     }
 
     pub fn session_id(&self, payload: &Value) -> Option<String> {
@@ -441,6 +549,39 @@ mod tests {
         let agy = find("agy").unwrap();
         assert!(!agy.is_passthrough(&v(&["--dangerously-skip-permissions"])));
         assert!(agy.is_passthrough(&v(&["models"])));
+    }
+
+    #[test]
+    fn codex_resumes_with_a_subcommand_after_its_flags() {
+        let codex = find("codex").unwrap();
+        let args = v(&["-m", "gpt-5.5", "--yolo", "-i", "a.png", "b.png", "fix the bug"]);
+        assert_eq!(
+            codex.launch_args(&args, Launch::Resume("t-1")),
+            v(&["-m", "gpt-5.5", "--yolo", "resume", "t-1"])
+        );
+        assert_eq!(
+            codex.launch_args(&v(&["-C", "../x", "-s", "read-only"]), Launch::Continue),
+            v(&["-s", "read-only", "resume", "--last"])
+        );
+        // A pane started with `codex resume ...` resumes whatever it ended up in.
+        let args = v(&["resume", "--last", "--model", "o3"]);
+        assert_eq!(
+            codex.launch_args(&args, Launch::Resume("t-2")),
+            v(&["--model", "o3", "resume", "t-2"])
+        );
+    }
+
+    #[test]
+    fn codex_passthrough_and_cwd() {
+        let codex = find("codex").unwrap();
+        assert!(codex.is_passthrough(&v(&["exec", "hi"])));
+        assert!(codex.is_passthrough(&v(&["-m", "o3", "e", "hi"])));
+        assert!(!codex.is_passthrough(&v(&["resume", "abc"])));
+        assert!(!codex.is_passthrough(&v(&["-p", "work", "fork"])));
+        assert_eq!(codex.effective_cwd(&v(&["-C", "sub", "hi"]), "/r"), "/r/sub");
+        assert_eq!(codex.effective_cwd(&v(&["--cd=/abs"]), "/r"), "/abs");
+        assert_eq!(codex.effective_cwd(&v(&["-m", "-C"]), "/r"), "/r");
+        assert_eq!(find("claude").unwrap().effective_cwd(&v(&["-C", "x"]), "/r"), "/r");
     }
 
     #[test]

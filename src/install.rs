@@ -15,6 +15,8 @@ struct Integration {
     home: fn() -> PathBuf,
     install: fn(&str) -> io::Result<PathBuf>,
     uninstall: fn() -> io::Result<Option<PathBuf>>,
+    /// Printed after a successful install.
+    note: Option<&'static str>,
 }
 
 const INTEGRATIONS: &[Integration] = &[
@@ -23,30 +25,42 @@ const INTEGRATIONS: &[Integration] = &[
         home: claude_home,
         install: claude_install,
         uninstall: claude_uninstall,
+        note: None,
     },
     Integration {
         agent: "copilot",
         home: copilot_home,
         install: copilot_install,
         uninstall: copilot_uninstall,
+        note: None,
     },
     Integration {
         agent: "kimi",
         home: kimi_home,
         install: kimi_install,
         uninstall: kimi_uninstall,
+        note: None,
     },
     Integration {
         agent: "agy",
         home: agy_home,
         install: agy_install,
         uninstall: agy_uninstall,
+        note: None,
     },
     Integration {
         agent: "grok",
         home: grok_home,
         install: grok_install,
         uninstall: grok_uninstall,
+        note: None,
+    },
+    Integration {
+        agent: "codex",
+        home: codex_home,
+        install: codex_install,
+        uninstall: codex_uninstall,
+        note: Some("codex runs new hooks only once trusted: open codex and approve it in /hooks"),
     },
 ];
 
@@ -90,7 +104,12 @@ pub fn install(which: &str) -> i32 {
             continue;
         }
         match (i.install)(&format!("{za} hook {}", i.agent)) {
-            Ok(path) => println!("  {:<8} hook installed in {}", i.agent, path.display()),
+            Ok(path) => {
+                println!("  {:<8} hook installed in {}", i.agent, path.display());
+                if let Some(note) = i.note {
+                    println!("  {:<8} {note}", "");
+                }
+            }
             Err(e) => {
                 failed = true;
                 eprintln!("  {:<8} failed: {e}", i.agent);
@@ -242,16 +261,8 @@ fn claude_style_entry(command: &str) -> Value {
     json!({ "hooks": [{ "type": "command", "command": command, "timeout": 10 }] })
 }
 
-// claude: ~/.claude/settings.json, hooks.SessionStart
-
-fn claude_home() -> PathBuf {
-    std::env::var_os("CLAUDE_CONFIG_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| state::home().join(".claude"))
-}
-
-fn claude_install(command: &str) -> io::Result<PathBuf> {
-    let path = claude_home().join("settings.json");
+/// Add `command` to `hooks.SessionStart` in a Claude-style JSON config.
+fn session_start_install(path: PathBuf, command: &str) -> io::Result<PathBuf> {
     edit_json(&path, |root| {
         let hooks = root.entry("hooks").or_insert_with(|| json!({}));
         if let Some(hooks) = hooks.as_object_mut() {
@@ -265,8 +276,7 @@ fn claude_install(command: &str) -> io::Result<PathBuf> {
     Ok(path)
 }
 
-fn claude_uninstall() -> io::Result<Option<PathBuf>> {
-    let path = claude_home().join("settings.json");
+fn session_start_uninstall(path: PathBuf) -> io::Result<Option<PathBuf>> {
     if !path.exists() {
         return Ok(None);
     }
@@ -276,6 +286,24 @@ fn claude_uninstall() -> io::Result<Option<PathBuf>> {
         }
     })?;
     Ok(changed.then_some(path))
+}
+
+// claude: ~/.claude/settings.json, hooks.SessionStart
+
+fn claude_home() -> PathBuf {
+    std::env::var_os("CLAUDE_CONFIG_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| state::home().join(".claude"))
+}
+
+fn claude_install(command: &str) -> io::Result<PathBuf> {
+    let path = claude_home().join("settings.json");
+    session_start_install(path, command)
+}
+
+fn claude_uninstall() -> io::Result<Option<PathBuf>> {
+    let path = claude_home().join("settings.json");
+    session_start_uninstall(path)
 }
 
 // copilot: ~/.copilot/hooks/za.json (user-level hook files, Copilot CLI format)
@@ -400,6 +428,26 @@ fn grok_install(command: &str) -> io::Result<PathBuf> {
 
 fn grok_uninstall() -> io::Result<Option<PathBuf>> {
     remove_file_if_present(grok_home().join("hooks/za.json"))
+}
+
+// codex: ~/.codex/hooks.json, hooks.SessionStart (Claude-style). Codex keys
+// its trust approval on the hook's contents, so reinstalling the same command
+// leaves the file untouched and the approval valid.
+
+fn codex_home() -> PathBuf {
+    std::env::var_os("CODEX_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| state::home().join(".codex"))
+}
+
+fn codex_install(command: &str) -> io::Result<PathBuf> {
+    let path = codex_home().join("hooks.json");
+    session_start_install(path, command)
+}
+
+fn codex_uninstall() -> io::Result<Option<PathBuf>> {
+    let path = codex_home().join("hooks.json");
+    session_start_uninstall(path)
 }
 
 fn remove_file_if_present(path: PathBuf) -> io::Result<Option<PathBuf>> {

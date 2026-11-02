@@ -56,6 +56,63 @@ pub fn hook_belongs_to(wrapper: i32) -> bool {
     false
 }
 
+#[cfg(target_os = "linux")]
+fn args(pid: i32) -> Option<Vec<String>> {
+    let raw = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
+    Some(
+        raw.split(|b| *b == 0)
+            .filter(|a| !a.is_empty())
+            .map(|a| String::from_utf8_lossy(a).into_owned())
+            .collect(),
+    )
+}
+
+#[cfg(not(target_os = "linux"))]
+fn args(pid: i32) -> Option<Vec<String>> {
+    let out = std::process::Command::new("ps")
+        .args(["-o", "args=", "-p", &pid.to_string()])
+        .output()
+        .ok()?;
+    Some(String::from_utf8_lossy(&out.stdout).split_whitespace().map(String::from).collect())
+}
+
+/// Whether one of this process's ancestors has `arg` on its command line
+/// (e.g. the `codex app-server` daemon that fired this hook).
+pub fn ancestor_has_arg(arg: &str) -> bool {
+    let mut pid = std::process::id() as i32;
+    for _ in 0..64 {
+        let Some(info) = info(pid) else { return false };
+        if info.ppid <= 1 {
+            return false;
+        }
+        pid = info.ppid;
+        if args(pid).is_some_and(|a| a.iter().skip(1).any(|a| a == arg)) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Whether `pid` is a running za process (not a reused pid after a reboot).
+pub fn is_live_za(pid: u32) -> bool {
+    let Ok(pid) = i32::try_from(pid) else { return false };
+    // SAFETY: signal 0 only checks that the process exists.
+    let exists = unsafe { libc::kill(pid, 0) } == 0
+        || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM);
+    if !exists {
+        return false;
+    }
+    // A wrapper started before za was reinstalled reads as "za (deleted)".
+    let name = |p: &std::path::Path| {
+        p.file_name()
+            .map(|n| n.to_string_lossy().trim_end_matches(" (deleted)").to_string())
+    };
+    match (info(pid).and_then(|i| i.exe), std::env::current_exe().ok()) {
+        (Some(theirs), Some(ours)) => name(&theirs) == name(&ours),
+        _ => true,
+    }
+}
+
 /// While a child owns the terminal, Ctrl-C and Ctrl-\ reach our whole process
 /// group. The child decides what they mean; za must just stay alive to wait.
 pub fn ignore_interrupts(ignore: bool) {

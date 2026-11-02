@@ -41,6 +41,10 @@ pub struct Slot {
     pub cwd: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub zellij_session: Option<String>,
+    /// The za wrapper running this pane, for matching hooks that fire outside
+    /// the pane (see `Agent::server_arg`) to live panes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u32>,
     /// The agent was quit in a resurrected pane that then became a shell.
     /// Zellij keeps re-running the pane's original command, so later
     /// restores must give it the shell, not the agent.

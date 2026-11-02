@@ -34,7 +34,7 @@ echo 'eval "$(za init zsh)"' >> ~/.zshrc   # or bash / fish
 
 Then launch Zellij with `za` instead of `zellij` (or `alias zj=za`).
 
-Inside Zellij you keep typing `claude`, `copilot`, `kimi`, `agy` or `grok` as
+Inside Zellij you keep typing `claude`, `copilot`, `kimi`, `agy`, `grok` or `codex` as
 usual. The shell functions only exist inside Zellij and keep any existing
 alias working (`alias agy="agy --dangerously-skip-permissions"` still applies).
 
@@ -61,6 +61,7 @@ alias working (`alias agy="agy --dangerously-skip-permissions"` still applies).
 | kimi | `--session <id>` | `~/.kimi-code/config.toml` (SessionStart) |
 | agy | `--conversation <id>` | `~/.gemini/config/hooks.json` (PreInvocation) |
 | grok | `--resume <id>` | `~/.grok/hooks/za.json` (SessionStart) |
+| codex | `resume <id>` | `~/.codex/hooks.json` (SessionStart) |
 
 On resume the original command line is replayed minus anything that would
 pick a different session: the initial prompt, `--continue`, `--resume`,
@@ -132,6 +133,20 @@ leave `state.json` once no saved layout refers to them.
 - copilot's flags and hook format come from GitHub's docs, not a local
   install. Run `za status` after starting copilot in a pane to confirm a
   session id was recorded.
+- codex support was written against codex 0.166.0 (its source and `--help`).
+  Run `za status` after a first prompt in a codex pane to confirm a session id
+  was recorded. Codex only runs a new hook once you've trusted it: after
+  `za install`, open codex and approve the hook in `/hooks`. Its session id is
+  recorded at your first prompt, not when the pane opens.
+- By default codex runs its sessions in a shared background server
+  (`codex app-server`), and hooks run there, outside the pane. za then matches
+  a session to the live codex pane working in the same directory. With one
+  codex pane per directory that's exact. Panes sharing a directory each get a
+  session back, but may swap; and a `/clear` or `/resume` inside one of
+  several panes sharing a directory isn't recorded, so that pane resumes its
+  earlier session. A codex in a plain terminal (outside za) using the same
+  server and directory can be mistaken for a za pane's. Started with
+  `--no-daemon`, codex runs in the pane and is matched exactly.
 - A nested agent (e.g. `claude -p` run from inside a wrapped claude) inherits
   the pane's environment; the hook checks the process tree so it can't
   overwrite the pane's session.

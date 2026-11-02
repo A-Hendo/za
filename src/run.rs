@@ -95,7 +95,7 @@ fn supervise(agent: &Agent, slot: &str, args: &[String]) -> i32 {
     let cfg = config::load();
     let here = std::env::current_dir()
         .ok()
-        .map(|p| p.to_string_lossy().into_owned());
+        .map(|p| agent.effective_cwd(args, &p.to_string_lossy()));
     let recorded = state::update(|st| {
         let previous = st.slots.get(slot).cloned();
         let rec = st.slots.entry(slot.to_string()).or_insert_with(|| Slot {
@@ -105,6 +105,7 @@ fn supervise(agent: &Agent, slot: &str, args: &[String]) -> i32 {
             ..Slot::default()
         });
         rec.zellij_session = std::env::var("ZELLIJ_SESSION_NAME").ok();
+        rec.pid = Some(std::process::id());
         rec.updated_at = state::now();
         previous
     });

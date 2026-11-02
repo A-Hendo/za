@@ -25,7 +25,7 @@ Usage:
   za status                 Show tracked sessions and agent panes
   za gc                     Forget agent panes no saved layout refers to
 
-Agents: claude, copilot, kimi, agy, grok
+Agents: claude, copilot, kimi, agy, grok, codex
 Files:  ~/.config/za/state.json, ~/.config/za/config.toml
 ";
 
